@@ -1,0 +1,114 @@
+#Carga de datos/Upload data
+import tarfile
+with tarfile.open('aclImdb_v1.tar.gz','r:gz') as tar:
+    tar.extractall()
+
+#Preprocesado/Preprocessing
+import pyprind
+import pandas as pd
+import os
+
+#Cambiar basepath al directorio del conjunto de datos a binario
+basepath='aclImdb'
+labels={'pos':1,'neg':0}
+pbar= pyprind.ProgBar(50000)
+dfs = []  # Lista para almacenar los DataFrames temporales
+
+for s in ('test', 'train'):
+    for l in ('pos', 'neg'):
+        path = os.path.join(basepath, s, l)
+        data = []  # Lista temporal para almacenar los datos de esta iteración
+        for file in os.listdir(path):
+            with open(os.path.join(path, file), 'r', encoding='utf-8') as infile:
+                txt = infile.read()
+            data.append([txt, labels[l]])
+            pbar.update()
+        df = pd.DataFrame(data, columns=['review', 'sentiment'])
+        dfs.append(df)
+
+# Concatenar los DataFrames en uno solo
+df1 = pd.concat(dfs, ignore_index=True)
+
+#mezclar la muestra/suffle the data
+import numpy as np
+np.random.seed(0)
+df1=df1.reindex(np.random.permutation(df1.index))
+df1.to_csv('movie_data.csv',index=False, encoding='utf-8')
+
+dff=pd.read_csv('movie_data.csv', encoding='utf-8')
+
+#Limpieza de datos/Data cleaning
+import re
+def preprocessor(text):
+    text=re.sub('<[^>]*>','', text)
+    emoticons=re.findall('(?::|;|=)(?:-)?(?:\)|\(D|P)',text)
+    text=(re.sub('[\W]+',' ', text.lower())+' '.join(emoticons).replace('-',''))
+    return text
+
+dff['review']=dff['review'].apply(preprocessor)
+
+#Separacion de texto
+def tokenizer(text):
+    return text.split()
+
+
+from nltk.stem.porter import PorterStemmer
+porter=PorterStemmer()
+def tokenizer_porter(text):
+    return [porter.stem(word) for word in text.split()]
+tokenizer_porter('runners like running and thus they run')
+
+
+#stopwords/parablas sin valor
+import nltk
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+
+#Modelado/Modelling
+#Regresion logistica para clasificar los comentarios en positivos y negativos/Logistic Regression for comments
+
+X_train=dff.loc[:25000,'review'].values
+y_train=dff.loc[:25000,'sentiment'].values
+X_test=dff.loc[25000:,'review'].values
+y_test=dff.loc[25000:,'sentiment'].values
+
+
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+tfidf = TfidfVectorizer(strip_accents=None,
+                        lowercase=False,
+                        preprocessor=None)
+
+param_grid = [{'vect__ngram_range': [(1, 1)],
+               'vect__stop_words': [stop, None],
+               'vect__tokenizer': [tokenizer, tokenizer_porter],
+               'clf__penalty': ['l1', 'l2'],
+               'clf__C': [1.0, 10.0, 100.0]},
+              {'vect__ngram_range': [(1, 1)],
+               'vect__stop_words': [stop, None],
+               'vect__tokenizer': [tokenizer, tokenizer_porter],
+               'vect__use_idf':[False],
+               'vect__norm':[None],
+               'clf__penalty': ['l1', 'l2'],
+               'clf__C': [1.0, 10.0, 100.0]},
+              ]
+
+lr_tfidf = Pipeline([('vect', tfidf),
+                     ('clf', LogisticRegression(random_state=0))])
+
+gs_lr_tfidf = GridSearchCV(lr_tfidf, param_grid,
+                           scoring='accuracy',
+                           cv=5,
+                           verbose=1,
+                           n_jobs=-1)
+gs_lr_tfidf =  GridSearchCV(X_train,y_train)
+
+print('Best parameter set: %s ' % gs_lr_tfidf.best_estimator_)
+print('CV Accuracy: %.3f' % gs_lr_tfidf.best_score_)
+
+clf = gs_lr_tfidf.best_estimator_
+print('Test Accuracy: %.3f' % clf.score(X_test, y_test))
+
